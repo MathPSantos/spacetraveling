@@ -1,6 +1,7 @@
-import { Fragment, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import { GetStaticPaths, GetStaticProps } from 'next';
 import Head from 'next/head';
+import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { FiCalendar, FiUser, FiClock } from 'react-icons/fi';
 import Prismic from '@prismicio/client';
@@ -14,9 +15,12 @@ import { getPrismicClient } from '../../services/prismic';
 
 import commonStyles from '../../styles/common.module.scss';
 import styles from './post.module.scss';
+import { Comments } from '../../components/Comments';
 
 interface Post {
+  uid: string;
   first_publication_date: string | null;
+  last_publication_date: string | null;
   data: {
     title: string;
     banner: {
@@ -33,11 +37,14 @@ interface Post {
 }
 
 interface PostProps {
+  preview: boolean;
   post: Post;
+  nextPost: Post | null;
+  prevPost: Post | null;
 }
 
-export default function Post({ post }: PostProps) {
-  const route = useRouter();
+export default function Post({ post, preview, prevPost, nextPost }: PostProps) {
+  const router = useRouter();
 
   const formatedPost = {
     ...post,
@@ -52,7 +59,28 @@ export default function Post({ post }: PostProps) {
 
   const [pagePost, setPagePost] = useState(formatedPost);
 
-  if (route.isFallback) {
+  const readingTime = useMemo(
+    () =>
+      post.data.content.reduce((acc, content) => {
+        const textBody = RichText.asText(content.body);
+        const split = textBody.split(' ');
+        const number_words = split.length;
+
+        const result = Math.ceil(number_words / 200);
+        return acc + result;
+      }, 0),
+    []
+  );
+
+  const isEditedPost = useMemo(() => {
+    if (router.isFallback) {
+      return false;
+    }
+
+    return post.last_publication_date !== post.first_publication_date;
+  }, [post, router.isFallback]);
+
+  if (router.isFallback) {
     return (
       <p
         style={{
@@ -67,15 +95,6 @@ export default function Post({ post }: PostProps) {
       </p>
     );
   }
-
-  const readingTime = post.data.content.reduce((acc, content) => {
-    const textBody = RichText.asText(content.body);
-    const split = textBody.split(' ');
-    const number_words = split.length;
-
-    const result = Math.ceil(number_words / 200);
-    return acc + result;
-  }, 0);
 
   return (
     <>
@@ -109,6 +128,29 @@ export default function Post({ post }: PostProps) {
             </span>
           </div>
 
+          {isEditedPost && (
+            <div className={styles.postEdited}>
+              <span>
+                * editado em{' '}
+                <time>
+                  {format(new Date(post.last_publication_date), 'dd MMM yyyy', {
+                    locale: ptBR,
+                  })}
+                </time>
+                , às{' '}
+                <time>
+                  {format(
+                    new Date(post.last_publication_date),
+                    `${'HH'}:${'mm'}`,
+                    {
+                      locale: ptBR,
+                    }
+                  )}
+                </time>
+              </span>
+            </div>
+          )}
+
           <div className={styles.postContent}>
             {pagePost.data.content.map(item => (
               <Fragment key={item.heading}>
@@ -123,6 +165,36 @@ export default function Post({ post }: PostProps) {
               </Fragment>
             ))}
           </div>
+          <footer className={styles.navigationController}>
+            <div>
+              {prevPost && (
+                <Link href={`/post/${prevPost.uid}`}>
+                  <a>
+                    <h4>{prevPost.data.title}</h4>
+                    <span>Post anterior</span>
+                  </a>
+                </Link>
+              )}
+            </div>
+            <div>
+              {nextPost && (
+                <Link href={`/post/${nextPost.uid}`}>
+                  <a>
+                    <h4>{nextPost.data.title}</h4>
+                    <span>Próximo post</span>
+                  </a>
+                </Link>
+              )}
+            </div>
+          </footer>
+          <Comments />
+          {preview && (
+            <aside className={commonStyles.exitPreviewButton}>
+              <Link href="/api/exit-preview">
+                <a>Sair do modo Preview</a>
+              </Link>
+            </aside>
+          )}
         </div>
       </main>
     </>
@@ -148,15 +220,22 @@ export const getStaticPaths: GetStaticPaths = async () => {
   };
 };
 
-export const getStaticProps: GetStaticProps = async context => {
-  const { slug } = context.params;
+export const getStaticProps: GetStaticProps = async ({
+  params,
+  preview = false,
+  previewData,
+}) => {
+  const { slug } = params;
 
   const prismic = getPrismicClient();
-  const response = await prismic.getByUID('post', String(slug), {});
+  const response = await prismic.getByUID('post', String(slug), {
+    ref: previewData?.ref ?? null,
+  });
 
   const post = {
     uid: response.uid,
     first_publication_date: response.first_publication_date,
+    last_publication_date: response.last_publication_date,
     data: {
       title: response.data.title,
       subtitle: response.data.subtitle,
@@ -171,9 +250,30 @@ export const getStaticProps: GetStaticProps = async context => {
     },
   };
 
+  const nextPost = await prismic.query(
+    [Prismic.predicates.at('document.type', 'post')],
+    {
+      pageSize: 1,
+      orderings: '[document.first_publication_date]',
+      after: response.id,
+    }
+  );
+
+  const prevPost = await prismic.query(
+    [Prismic.predicates.at('document.type', 'post')],
+    {
+      pageSize: 1,
+      orderings: '[document.first_publication_date desc]',
+      after: response.id,
+    }
+  );
+
   return {
     props: {
       post,
+      preview,
+      nextPost: nextPost.results[0] ?? null,
+      prevPost: prevPost.results[0] ?? null,
     },
   };
 };
